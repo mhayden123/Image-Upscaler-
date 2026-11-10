@@ -27,7 +27,7 @@ if [ ! -f "$INSTALL/lib/libncnn.a" ]; then
 fi
 
 echo "Creating a random-weight test model with the real converter…"
-"$PYTHON" "$ROOT/scripts/convert_srvgg_to_ncnn.py" --random --out-dir "$WORK/model" --name test
+"$PYTHON" "$ROOT/scripts/convert_to_ncnn.py" --arch srvgg --random --out-dir "$WORK/model" --name test
 
 echo "Compiling and running native tests…"
 g++ -std=c++17 -O2 -fopenmp -I"$ROOT/app/src/main/cpp" -I"$INSTALL/include/ncnn" \

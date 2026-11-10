@@ -84,7 +84,10 @@ kotlin {
 val checkModels by tasks.registering {
     val dir = layout.projectDirectory.dir("src/main/assets/models")
     doLast {
-        val needed = listOf("realesr-general-x4v3", "realesrgan-x4plus-anime", "realesrgan-x4plus")
+        val needed = listOf(
+            "realesr-general-x4v3", "realesrgan-x4plus-anime", "realesrgan-x4plus",
+            "4xNomosWebPhoto_esrgan", "4x-UltraSharp",
+        )
             .flatMap { listOf("$it.param", "$it.bin") }
         val missing = needed.filterNot { dir.file(it).asFile.exists() }
         if (missing.isNotEmpty()) {

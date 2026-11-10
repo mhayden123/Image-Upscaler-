@@ -4,6 +4,9 @@
 #   realesrgan-x4plus        - "Photo (max detail)"   (official NCNN release)
 #   realesrgan-x4plus-anime  - "Cartoon & text"       (official NCNN release)
 #   realesr-general-x4v3     - "General (fast)"       (converted from PyTorch here)
+# plus two community ESRGAN models, converted from PyTorch here:
+#   4xNomosWebPhoto_esrgan   - "Web photo (sharp)"   by Philip Hofmann, CC BY 4.0
+#   4x-UltraSharp            - "UltraSharp"          by Kim2091, CC BY-NC-SA 4.0 (non-commercial)
 #
 # Needs: curl, unzip, python3 with torch + pnnx (see scripts/requirements-convert.txt).
 set -euo pipefail
@@ -38,8 +41,33 @@ if have realesr-general-x4v3; then
 else
   echo "Downloading realesr-general-x4v3.pth and converting to NCNN"
   curl -fL --retry 4 --retry-delay 5 -o "$TMP/realesr-general-x4v3.pth" "$REL/realesr-general-x4v3.pth"
-  "$PYTHON" "$ROOT/scripts/convert_srvgg_to_ncnn.py" --pth "$TMP/realesr-general-x4v3.pth" --out-dir "$DEST" --name realesr-general-x4v3
+  "$PYTHON" "$ROOT/scripts/convert_to_ncnn.py" --arch srvgg --weights "$TMP/realesr-general-x4v3.pth" --out-dir "$DEST" --name realesr-general-x4v3
 fi
+
+# Downloads the first URL that works (community uploads sometimes move), then converts it.
+convert_rrdb() { # name, urls...
+  local name="$1"; shift
+  if have "$name"; then echo "$name already present"; return; fi
+  local file
+  for url in "$@"; do
+    file="$TMP/$name.${url##*.}"
+    echo "Trying $url"
+    if curl -fL --retry 3 --retry-delay 5 -o "$file" "$url"; then
+      "$PYTHON" "$ROOT/scripts/convert_to_ncnn.py" --arch rrdb --weights "$file" --out-dir "$DEST" --name "$name"
+      return
+    fi
+  done
+  echo "ERROR: could not download $name from any source"; exit 1
+}
+
+convert_rrdb 4xNomosWebPhoto_esrgan \
+  "https://github.com/Phhofm/models/releases/download/4xNomosWebPhoto_esrgan/4xNomosWebPhoto_esrgan.pth" \
+  "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.pth" \
+  "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors"
+
+convert_rrdb 4x-UltraSharp \
+  "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth" \
+  "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.safetensors"
 
 echo
 echo "Models in $DEST:"
@@ -55,4 +83,6 @@ check_blobs() {
 check_blobs realesr-general-x4v3 in0 out0
 check_blobs realesrgan-x4plus-anime data output
 check_blobs realesrgan-x4plus data output
+check_blobs 4xNomosWebPhoto_esrgan in0 out0
+check_blobs 4x-UltraSharp in0 out0
 sha256sum "$DEST"/*

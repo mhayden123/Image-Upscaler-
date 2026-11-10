@@ -69,7 +69,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app/src/main/assets/models
-          key: models-${{ hashFiles('scripts/fetch_models.sh', 'scripts/convert_srvgg_to_ncnn.py', 'scripts/requirements-convert.txt') }}
+          key: models-${{ hashFiles('scripts/fetch_models.sh', 'scripts/convert_to_ncnn.py', 'scripts/requirements-convert.txt') }}
 
       - name: Install model conversion tools
         if: steps.models-cache.outputs.cache-hit != 'true'

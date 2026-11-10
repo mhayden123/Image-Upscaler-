@@ -437,7 +437,16 @@ private const val BSD3 = "Redistribution and use in source and binary forms, wit
 
 private val LICENSES = """
 Real-ESRGAN models (realesr-general-x4v3, RealESRGAN_x4plus, RealESRGAN_x4plus_anime_6B)
-Copyright (c) 2021, Xintao Wang. BSD 3-Clause License.
+Copyright (c) 2021, Xintao Wang. BSD 3-Clause License (below).
+
+"Web photo (sharp)": 4xNomosWebPhoto_esrgan by Philip Hofmann (Phhofm).
+Licensed under CC BY 4.0: creativecommons.org/licenses/by/4.0
+Changes: converted from PyTorch to NCNN format with 16-bit weights.
+
+"UltraSharp": 4x-UltraSharp by Kim2091.
+Licensed under CC BY-NC-SA 4.0: creativecommons.org/licenses/by-nc-sa/4.0
+Non-commercial use only. The converted model in this app is shared under the same license.
+Changes: converted from PyTorch to NCNN format with 16-bit weights.
 
 NCNN neural network inference framework
 Copyright (C) 2017 Tencent. All rights reserved. BSD 3-Clause License.

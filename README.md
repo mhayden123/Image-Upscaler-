@@ -5,13 +5,15 @@ Everything runs on the phone's GPU. No internet connection is needed, and the ap
 
 ## Features
 
-- **3 AI models** to choose from (all from the open-source Real-ESRGAN project):
+- **5 AI models** to choose from:
 
   | Model | Best for | Speed | Size in APK |
   |---|---|---|---|
   | **General (fast)** (`realesr-general-x4v3`) | Most memes, screenshots, photos; removes JPEG blockiness | Fastest | ~2.4 MB |
   | **Cartoon & text** (`RealESRGAN_x4plus_anime_6B`) | Drawn memes, comics, anime, text-heavy images | Medium | ~9 MB |
-  | **Photo (max detail)** (`RealESRGAN_x4plus`) | Real photos and photo-based memes | Slowest | ~33 MB |
+  | **Photo (max detail)** (`RealESRGAN_x4plus`) | Real photos and photo-based memes | Slow | ~33 MB |
+  | **Web photo (sharp)** (`4xNomosWebPhoto_esrgan`) | Compressed photos from the internet (most memes); smooths less | Slow | ~33 MB |
+  | **UltraSharp** (`4x-UltraSharp`) | Maximum sharpness and detail; JPEG-heavy images. **Non-commercial license** | Slow | ~33 MB |
 
 - **2x or 4x** scale.
 - **"Keep original texture" slider** (0–100%): mixes the AI result with a classic bicubic enlargement of the original. That brings back grain and fine texture the AI smoothed away (along with some of the original's blur and JPEG noise). It updates instantly on still images. For GIFs it's applied while processing.
@@ -64,7 +66,7 @@ The NCNN library and the model files are downloaded at build time, not committed
 scripts/fetch_ncnn.sh                       # NCNN prebuilt for Android (Vulkan)
 pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
 pip install -r scripts/requirements-convert.txt
-scripts/fetch_models.sh                     # downloads models, converts realesr-general-x4v3 to NCNN
+scripts/fetch_models.sh                     # downloads models, converts the PyTorch ones to NCNN
 ```
 
 Then open the project in Android Studio and run it, or use `./gradlew assembleRelease`.
@@ -79,6 +81,8 @@ CI runs both before building the APK.
 ## Credits and licenses
 
 - **Real-ESRGAN** models: Copyright (c) 2021, Xintao Wang. [BSD 3-Clause](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE).
+- **4xNomosWebPhoto_esrgan**: by Philip Hofmann. [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Converted to NCNN with 16-bit weights.
+- **4x-UltraSharp**: by Kim2091. [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), **non-commercial use only**. The converted model is shared under the same license, so the app as a whole must not be sold or used commercially while it includes this model.
 - **NCNN**: Copyright (C) 2017 Tencent. [BSD 3-Clause](https://github.com/Tencent/ncnn/blob/master/LICENSE.txt).
 
 The app's About screen (ⓘ) shows these notices.
