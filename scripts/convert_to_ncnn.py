@@ -3,7 +3,8 @@
 
 Supported architectures (definitions mirror BasicSR / Real-ESRGAN, BSD-3-Clause, so we
 don't need to install those packages):
-  srvgg  - SRVGGNetCompact (realesr-general-x4v3)
+  srvgg  - SRVGGNetCompact (realesr-general-x4v3), converted with pnnx
+  (rrdb models are written to NCNN format directly: pnnx needs >13 GB RAM for them)
   rrdb   - RRDBNet / "ESRGAN" (RealESRGAN_x4plus, 4xNomosWebPhoto_esrgan, 4x-UltraSharp, ...)
            Both the modern BasicSR key names (conv_first, body.N.rdb1...) and the original
            ESRGAN names (model.0, model.1.sub.N.RDB1...) are accepted.
@@ -159,6 +160,106 @@ def build_rrdb(sd):
     return model
 
 
+# ---------------------------------------------------------------- direct NCNN writer for RRDBNet
+# pnnx needs >13 GB of RAM for a 23-block RRDBNet, so for this fixed, well-known architecture we
+# write the NCNN graph (.param) and weights (.bin) ourselves. Weights are stored as fp16, biases fp32.
+FP16_TAG = 0x01306B47
+
+
+class NcnnWriter:
+    def __init__(self):
+        self.layers = []  # [type, name, inputs, outputs, params]
+        self.weights = []  # bytes, in layer order
+        self.n = 0
+
+    def blob(self, prefix="b"):
+        self.n += 1
+        return f"{prefix}{self.n}"
+
+    def add(self, typ, inputs, params="", out=None):
+        out = out or self.blob()
+        self.layers.append([typ, f"{typ.lower()}_{len(self.layers)}", list(inputs), [out], params])
+        return out
+
+    def conv(self, x, conv: nn.Conv2d, leaky=False, out=None):
+        import numpy as np
+        w = conv.weight.detach().float().numpy()
+        b = conv.bias.detach().float().numpy()
+        o, i, kh, kw = w.shape
+        params = f"0={o} 1={kw} 11={kh} 2=1 3=1 4={kh // 2} 5=1 6={w.size}"
+        if leaky:
+            params += " 9=2 -23310=1,2.000000e-01"  # fused LeakyReLU(0.2)
+        wb = np.array([FP16_TAG], dtype="<u4").tobytes() + w.astype("<f2").tobytes()
+        wb += b"\0" * ((-len(wb)) % 4)  # 4-byte alignment
+        self.weights.append(wb + b.astype("<f4").tobytes())
+        return self.add("Convolution", [x], params, out)
+
+    def concat(self, xs):
+        return self.add("Concat", xs, "0=0")
+
+    def axpy(self, a, ca, b, cb):
+        """ca*a + cb*b"""
+        return self.add("Eltwise", [a, b], f"0=1 -23301=2,{ca:e},{cb:e}")
+
+    def upsample2(self, x):
+        return self.add("Interp", [x], "0=1 1=2.000000e+00 2=2.000000e+00")
+
+    def write(self, param_path, bin_path, input_name):
+        # NCNN requires a Split layer when one blob feeds several layers.
+        uses = {}
+        for L in self.layers:
+            for i in L[2]:
+                uses[i] = uses.get(i, 0) + 1
+        counters, layers = {}, [["Input", "input", [], [input_name], "0=0 1=0 2=3"]]
+        for L in [layers[0]] + self.layers:
+            if L is not layers[0]:
+                new_inputs = []
+                for i in L[2]:
+                    if uses.get(i, 0) > 1:
+                        k = counters.get(i, 0); counters[i] = k + 1
+                        new_inputs.append(f"{i}_s{k}")
+                    else:
+                        new_inputs.append(i)
+                L[2] = new_inputs
+                layers.append(L)
+            o = L[3][0]
+            if uses.get(o, 0) > 1:
+                layers.append(["Split", f"split_{o}", [o], [f"{o}_s{k}" for k in range(uses[o])], ""])
+        blobs = {b for L in layers for b in L[3]}
+        with open(param_path, "w") as f:
+            f.write(f"7767517\n{len(layers)} {len(blobs)}\n")
+            for typ, name, ins, outs, params in layers:
+                f.write(f"{typ:<24} {name:<24} {len(ins)} {len(outs)} {' '.join(ins + outs)} {params}".rstrip() + "\n")
+        with open(bin_path, "wb") as f:
+            for wb in self.weights:
+                f.write(wb)
+
+
+def write_rrdb_ncnn(model: "RRDBNet", param_path, bin_path):
+    g = NcnnWriter()
+    x = "in0"
+
+    def rdb(x, m: ResidualDenseBlock):
+        x1 = g.conv(x, m.conv1, leaky=True)
+        x2 = g.conv(g.concat([x, x1]), m.conv2, leaky=True)
+        x3 = g.conv(g.concat([x, x1, x2]), m.conv3, leaky=True)
+        x4 = g.conv(g.concat([x, x1, x2, x3]), m.conv4, leaky=True)
+        x5 = g.conv(g.concat([x, x1, x2, x3, x4]), m.conv5)
+        return g.axpy(x5, 0.2, x, 1.0)
+
+    feat = g.conv(x, model.conv_first)
+    h = feat
+    for block in model.body:
+        y = rdb(rdb(rdb(h, block.rdb1), block.rdb2), block.rdb3)
+        h = g.axpy(y, 0.2, h, 1.0)
+    feat = g.axpy(g.conv(h, model.conv_body), 1.0, feat, 1.0)
+    feat = g.conv(g.upsample2(feat), model.conv_up1, leaky=True)
+    feat = g.conv(g.upsample2(feat), model.conv_up2, leaky=True)
+    feat = g.conv(feat, model.conv_hr, leaky=True)
+    g.conv(feat, model.conv_last, out="out0")
+    g.write(param_path, bin_path, "in0")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", choices=["srvgg", "rrdb"], required=True)
@@ -184,9 +285,16 @@ def main():
     if args.weights:
         print(f"loaded weights from {args.weights}")
 
+    os.makedirs(args.out_dir, exist_ok=True)
+    if args.arch == "rrdb":
+        write_rrdb_ncnn(model, os.path.join(args.out_dir, args.name + ".param"), os.path.join(args.out_dir, args.name + ".bin"))
+        print(f"wrote {args.out_dir}/{args.name}.param and .bin (direct writer)")
+        if args.random:
+            torch.save(model.state_dict(), os.path.join(args.out_dir, args.name + ".state.pt"))
+        return
+
     import pnnx  # imported late so --help works without it
 
-    os.makedirs(args.out_dir, exist_ok=True)
     work = tempfile.mkdtemp(prefix="pnnx_")
     try:
         pt_path = os.path.join(work, "model.pt")
