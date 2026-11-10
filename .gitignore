@@ -1,0 +1,22 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# Downloaded at build time (scripts/fetch_ncnn.sh, scripts/fetch_models.sh)
+app/src/main/cpp/ncnn-android-vulkan/
+app/src/main/assets/models/
+
+# Signing keys must never be committed
+*.jks
+*.keystore
+signing-secrets*.txt
+
+# Python
+__pycache__/
+*.pyc

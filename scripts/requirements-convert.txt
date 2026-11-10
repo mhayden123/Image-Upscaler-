@@ -1,0 +1,6 @@
+# Only needed to convert realesr-general-x4v3 to NCNN (scripts/fetch_models.sh).
+# Install torch from the CPU index to avoid a multi-GB CUDA download:
+#   pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r scripts/requirements-convert.txt
+pnnx==20260526
+numpy
