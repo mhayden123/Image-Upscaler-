@@ -14,6 +14,7 @@ Everything runs on the phone's GPU. No internet connection is needed, and the ap
   | **Photo (max detail)** (`RealESRGAN_x4plus`) | Real photos and photo-based memes | Slowest | ~33 MB |
 
 - **2x or 4x** scale.
+- **"Keep original texture" slider** (0–100%): mixes the AI result with a classic bicubic enlargement of the original. That brings back grain and fine texture the AI smoothed away (along with some of the original's blur and JPEG noise). It updates instantly on still images. For GIFs it's applied while processing.
 - **Before/after slider**: drag to compare, pinch to zoom, double-tap to reset.
 - **Animated GIFs**: every frame is upscaled and a new animated GIF is written, keeping frame timing and looping.
 - **Save to Gallery** in `Pictures/Upscaler` (PNG for still images, GIF for animations).
@@ -52,7 +53,8 @@ To make your own key: `keytool -genkeypair -v -keystore upscaler.jks -alias upsc
 2. **Inference**: the C++ code (`app/src/main/cpp/`) runs the model with [NCNN](https://github.com/Tencent/ncnn) on the GPU via Vulkan, falling back to the CPU if there's no GPU. The image is split into tiles so large images fit in GPU memory. Each tile is padded with neighbouring pixels and the padding is trimmed afterwards, so there are no visible seams.
 3. **2x mode**: all three models work at 4x natively. For 2x, each 2×2 block of the 4x output is averaged, which keeps the AI detail at half the size.
 4. **Transparency**: the models handle color only. The alpha channel is enlarged separately with bilinear interpolation.
-5. **GIF encoding**: each upscaled frame gets its own optimized 256-color palette (median-cut). Unchanged pixels between frames are stored as transparent, which keeps the file much smaller.
+5. **Texture slider**: `out = AI × (1 − t) + bicubic(original) × t`, computed in C++ on the preview for instant feedback and at full resolution when saving.
+6. **GIF encoding**: each upscaled frame gets its own optimized 256-color palette (median-cut). Unchanged pixels between frames are stored as transparent, which keeps the file much smaller.
 
 ## Building locally (Android Studio)
 

@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.upscaler.data.ImageIo
 import app.upscaler.data.InputImage
+import app.upscaler.engine.NativeUpscaler
 import app.upscaler.engine.UpscaleEngine
 import app.upscaler.engine.UpscaleModel
 import kotlinx.coroutines.CancellationException
@@ -16,16 +17,21 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class UpscaleResult(
+data class UpscaleResult(
     val before: Bitmap,
-    /** Display-sized copy of the result (Android can't draw huge bitmaps). */
-    val afterPreview: Bitmap,
-    /** Full-resolution still result (null for GIFs, which live in [gifFile]). */
+    /** Display-sized copy of the raw AI result (Android can't draw huge bitmaps). */
+    val aiPreview: Bitmap,
+    /** Classic enlargement of the original at preview size, for the live texture slider (stills only). */
+    val classicPreview: Bitmap?,
+    /** The original image, kept to apply the texture setting at full size when saving (stills only). */
+    val original: Bitmap?,
+    /** Full-resolution raw AI result (stills only; GIFs live in [gifFile]). */
     val full: Bitmap?,
     val gifFile: File?,
     val width: Int,
@@ -34,6 +40,8 @@ class UpscaleResult(
     val elapsedMs: Long,
     val model: UpscaleModel,
     val scale: Int,
+    /** Texture setting baked into a GIF result (stills apply it live instead). */
+    val texture: Float,
     val savedUri: Uri? = null,
 )
 
@@ -52,14 +60,23 @@ data class UiState(
     val saving: Boolean = false,
     val message: String? = null,
     val gpuName: String? = null,
+    /** "Keep original texture", 0..1. */
+    val texture: Float = 0f,
+    /** What the "After" side shows: the AI result with the texture setting applied. */
+    val afterPreview: Bitmap? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val engine = UpscaleEngine(app)
-    private val _state = MutableStateFlow(UiState())
+    private val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    private val _state = MutableStateFlow(UiState(texture = prefs.getFloat(KEY_TEXTURE, 0f).coerceIn(0f, 1f)))
     val state: StateFlow<UiState> = _state.asStateFlow()
     private var job: Job? = null
+
+    // Must be declared before init {}, which starts collecting it.
+    private val blendRequests = MutableStateFlow(0L)
+    private val blendBuffers = arrayOfNulls<Bitmap>(2)
 
     private val resultsDir = File(app.cacheDir, "results").apply {
         deleteRecursively() // leftovers from earlier sessions
@@ -73,6 +90,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (t: Throwable) { "" }
             _state.update { it.copy(gpuName = name) }
         }
+        // Re-blend the preview whenever the slider or the result changes. collectLatest cancels
+        // and waits for the previous blend first, so only one blend writes at a time.
+        viewModelScope.launch(Dispatchers.Default) {
+            blendRequests.collectLatest { updateAfterPreview() }
+        }
+    }
+
+    private fun requestBlend() = blendRequests.update { it + 1 }
+
+    private fun updateAfterPreview() {
+        val s = _state.value
+        val r = s.result ?: return
+        val shown: Bitmap = if (r.classicPreview == null || s.texture <= 0f) r.aiPreview else {
+            // Two buffers: write into the one not currently on screen, then swap.
+            val w = r.aiPreview.width
+            val h = r.aiPreview.height
+            val idx = if (blendBuffers[0] != null && blendBuffers[0] === s.afterPreview) 1 else 0
+            var target = blendBuffers[idx]
+            if (target == null || target.width != w || target.height != h) {
+                target = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                blendBuffers[idx] = target
+            }
+            NativeUpscaler.nativeBlend(r.aiPreview, r.classicPreview, target, s.texture)
+            target.setHasMipMap(true)
+            target
+        }
+        _state.update { if (it.result === r) it.copy(afterPreview = shown) else it }
+    }
+
+    fun setTexture(t: Float) {
+        val v = t.coerceIn(0f, 1f)
+        prefs.edit().putFloat(KEY_TEXTURE, v).apply()
+        _state.update { st ->
+            val r = st.result
+            // A saved still no longer matches what's on screen once the texture changes.
+            val newResult = if (r != null && r.gifFile == null && r.savedUri != null) r.copy(savedUri = null) else r
+            st.copy(texture = v, result = newResult)
+        }
+        requestBlend()
     }
 
     fun pickImage(uri: Uri) {
@@ -81,7 +137,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val input = withContext(Dispatchers.IO) { ImageIo.load(getApplication(), uri) }
-                _state.update { it.copy(input = input, result = null, loadingInput = false) }
+                _state.update { it.copy(input = input, result = null, afterPreview = null, loadingInput = false) }
             } catch (t: Throwable) {
                 _state.update { it.copy(loadingInput = false, message = "Couldn't open that image: ${t.message ?: t.javaClass.simpleName}") }
             }
@@ -112,17 +168,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         val started = SystemClock.elapsedRealtime()
         engine.beginJob()
-        _state.update { it.copy(job = JobState.Running("Loading AI model…", null, started), result = null, message = null) }
+        _state.update { it.copy(job = JobState.Running("Loading AI model…", null, started), result = null, afterPreview = null, message = null) }
 
         job = viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
                     when (input) {
                         is InputImage.Still -> runStill(input, s.model, s.scale, started)
-                        is InputImage.AnimatedGif -> runGif(input, s.model, s.scale, started)
+                        is InputImage.AnimatedGif -> runGif(input, s.model, s.scale, s.texture, started)
                     }
                 }
-                _state.update { it.copy(job = JobState.Idle, result = result) }
+                _state.update { it.copy(job = JobState.Idle, result = result, afterPreview = result.aiPreview) }
+                requestBlend()
             } catch (e: CancellationException) {
                 _state.update { it.copy(job = JobState.Idle, message = "Cancelled") }
             } catch (e: OutOfMemoryError) {
@@ -140,23 +197,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         engine.prepare(model)
         progress("Upscaling…", 0f, started)
         val out = engine.upscaleStill(input.bitmap, model, scale) { p -> progress("Upscaling…", p, started) }
+        val aiPreview = ImageIo.previewOf(out)
         return UpscaleResult(
-            before = input.bitmap, afterPreview = ImageIo.previewOf(out), full = out, gifFile = null,
+            before = input.bitmap, aiPreview = aiPreview,
+            classicPreview = UpscaleEngine.classicResize(input.bitmap, aiPreview.width, aiPreview.height),
+            original = input.bitmap, full = out, gifFile = null,
             width = out.width, height = out.height, frames = 1,
-            elapsedMs = SystemClock.elapsedRealtime() - started, model = model, scale = scale,
+            elapsedMs = SystemClock.elapsedRealtime() - started, model = model, scale = scale, texture = 0f,
         )
     }
 
-    private fun runGif(input: InputImage.AnimatedGif, model: UpscaleModel, scale: Int, started: Long): UpscaleResult {
+    private fun runGif(input: InputImage.AnimatedGif, model: UpscaleModel, scale: Int, texture: Float, started: Long): UpscaleResult {
         engine.prepare(model)
         val file = File(resultsDir, "result_${System.currentTimeMillis()}.gif")
-        val r = engine.upscaleGif(input.bytes, model, scale, file) { frame, total, p ->
+        val r = engine.upscaleGif(input.bytes, model, scale, texture, file) { frame, total, p ->
             progress("Frame ${minOf(frame + 1, total)} of $total", p, started)
         }
         return UpscaleResult(
-            before = input.preview, afterPreview = ImageIo.previewOf(r.firstFrame), full = null, gifFile = r.file,
+            before = input.preview, aiPreview = ImageIo.previewOf(r.firstFrame), classicPreview = null,
+            original = null, full = null, gifFile = r.file,
             width = r.width, height = r.height, frames = r.frames,
-            elapsedMs = SystemClock.elapsedRealtime() - started, model = model, scale = scale,
+            elapsedMs = SystemClock.elapsedRealtime() - started, model = model, scale = scale, texture = texture,
         )
     }
 
@@ -171,14 +232,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             try {
-                val uri = withContext(Dispatchers.IO) {
+                val texture = _state.value.texture
+                val uri = withContext(Dispatchers.Default) {
                     if (result.gifFile != null) ImageIo.saveGif(getApplication(), result.gifFile)
-                    else ImageIo.saveStill(getApplication(), result.full!!)
+                    else if (texture <= 0f) ImageIo.saveStill(getApplication(), result.full!!)
+                    else {
+                        // Apply the texture setting at full resolution for the saved file.
+                        val blended = UpscaleEngine.applyTexture(result.full!!, result.original!!, texture)
+                        try { ImageIo.saveStill(getApplication(), blended) } finally { blended.recycle() }
+                    }
                 }
                 _state.update {
                     it.copy(
                         saving = false,
-                        result = if (it.result === result) copyWithSaved(result, uri) else it.result,
+                        result = if (it.result === result && it.texture == texture) result.copy(savedUri = uri) else it.result,
                         message = "Saved to Pictures/Upscaler",
                     )
                 }
@@ -187,10 +254,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-
-    private fun copyWithSaved(r: UpscaleResult, uri: Uri) = UpscaleResult(
-        r.before, r.afterPreview, r.full, r.gifFile, r.width, r.height, r.frames, r.elapsedMs, r.model, r.scale, uri,
-    )
 
     override fun onCleared() {
         engine.cancel()
@@ -204,5 +267,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_STILL_PIXELS = 64_000_000L
         /** GIF frames are re-encoded one by one; 16 MP per frame keeps that reasonable. */
         const val MAX_GIF_FRAME_PIXELS = 16_000_000L
+        private const val KEY_TEXTURE = "texture"
     }
 }

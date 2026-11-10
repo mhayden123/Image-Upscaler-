@@ -126,4 +126,85 @@ int upscaleRgba(Model& u, const uint8_t* in, int w, int h, int inStride,
     return RESULT_OK;
 }
 
+namespace {
+
+// Catmull-Rom cubic weights for fractional offset t in [0, 1).
+inline void cubicWeights(float t, float w[4]) {
+    const float t2 = t * t, t3 = t2 * t;
+    w[0] = 0.5f * (-t3 + 2 * t2 - t);
+    w[1] = 0.5f * (3 * t3 - 5 * t2 + 2);
+    w[2] = 0.5f * (-3 * t3 + 4 * t2 + t);
+    w[3] = 0.5f * (t3 - t2);
+}
+
+struct Tap {
+    int idx[4];
+    float wt[4];
+};
+
+std::vector<Tap> makeTaps(int inSize, int outSize) {
+    std::vector<Tap> taps(outSize);
+    const float scale = (float)inSize / (float)outSize;
+    for (int o = 0; o < outSize; o++) {
+        const float src = (o + 0.5f) * scale - 0.5f;  // pixel-center alignment
+        const int i0 = (int)std::floor(src);
+        cubicWeights(src - (float)i0, taps[o].wt);
+        for (int k = 0; k < 4; k++) taps[o].idx[k] = std::min(std::max(i0 - 1 + k, 0), inSize - 1);
+    }
+    return taps;
+}
+
+}  // namespace
+
+void resizeBicubicRgba(const uint8_t* in, int w, int h, int inStride,
+                       uint8_t* out, int ow, int oh, int outStride) {
+    if (w <= 0 || h <= 0 || ow <= 0 || oh <= 0) return;
+    const std::vector<Tap> tx = makeTaps(w, ow);
+    const std::vector<Tap> ty = makeTaps(h, oh);
+
+    // Pass 1: horizontal, into a float buffer (h rows x ow columns x 4 channels).
+    std::vector<float> tmp((size_t)h * ow * 4);
+    for (int y = 0; y < h; y++) {
+        const uint8_t* row = in + (size_t)y * inStride;
+        float* dst = &tmp[(size_t)y * ow * 4];
+        for (int x = 0; x < ow; x++) {
+            const Tap& t = tx[x];
+            for (int c = 0; c < 4; c++) {
+                float v = 0;
+                for (int k = 0; k < 4; k++) v += t.wt[k] * row[t.idx[k] * 4 + c];
+                dst[x * 4 + c] = v;
+            }
+        }
+    }
+    // Pass 2: vertical, then clamp. Colors are premultiplied, so each channel must stay <= alpha.
+    for (int y = 0; y < oh; y++) {
+        const Tap& t = ty[y];
+        const float* r[4];
+        for (int k = 0; k < 4; k++) r[k] = &tmp[(size_t)t.idx[k] * ow * 4];
+        uint8_t* dst = out + (size_t)y * outStride;
+        for (int x = 0; x < ow; x++) {
+            float v[4];
+            for (int c = 0; c < 4; c++)
+                v[c] = t.wt[0] * r[0][x * 4 + c] + t.wt[1] * r[1][x * 4 + c] +
+                       t.wt[2] * r[2][x * 4 + c] + t.wt[3] * r[3][x * 4 + c];
+            const int a = std::min(255, std::max(0, (int)std::lround(v[3])));
+            for (int c = 0; c < 3; c++) dst[x * 4 + c] = (uint8_t)std::min(a, std::max(0, (int)std::lround(v[c])));
+            dst[x * 4 + 3] = (uint8_t)a;
+        }
+    }
+}
+
+void blendRgba(const uint8_t* ai, int aiStride, const uint8_t* classic, int classicStride,
+               uint8_t* out, int outStride, int w, int h, float t) {
+    t = std::min(1.f, std::max(0.f, t));
+    const int wb = (int)std::lround(t * 256.f);  // fixed-point weight, 0..256
+    const int wa = 256 - wb;
+    for (int y = 0; y < h; y++) {
+        const uint8_t* a = ai + (size_t)y * aiStride;
+        const uint8_t* b = classic + (size_t)y * classicStride;
+        uint8_t* o = out + (size_t)y * outStride;
+        for (int i = 0; i < w * 4; i++) o[i] = (uint8_t)((a[i] * wa + b[i] * wb + 128) >> 8);
+    }
+}
+
 }  // namespace upscaler

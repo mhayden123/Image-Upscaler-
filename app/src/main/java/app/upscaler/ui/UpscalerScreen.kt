@@ -48,6 +48,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -79,6 +80,7 @@ import app.upscaler.engine.UpscaleModel
 import kotlinx.coroutines.delay
 import java.io.File
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -208,7 +210,7 @@ private fun EmptyPicker(loading: Boolean, onPick: () -> Unit) {
 private fun ImageArea(state: UiState) {
     val input = state.input ?: return
     val result = state.result
-    var playGif by remember(result) { mutableStateOf(false) }
+    var playGif by remember(result?.gifFile) { mutableStateOf(false) }
     val box = Modifier
         .fillMaxWidth()
         .heightIn(min = 240.dp)
@@ -220,8 +222,9 @@ private fun ImageArea(state: UiState) {
         when {
             result != null && playGif && result.gifFile != null -> AnimatedGifView(result.gifFile, Modifier.fillMaxSize())
             result != null -> {
-                val before = remember(result) { result.before.asImageBitmap() }
-                val after = remember(result) { result.afterPreview.asImageBitmap() }
+                val before = remember(result.before) { result.before.asImageBitmap() }
+                val afterBitmap = state.afterPreview ?: result.aiPreview
+                val after = remember(afterBitmap, state.texture) { afterBitmap.asImageBitmap() }
                 CompareView(before, after, Modifier.fillMaxSize())
             }
             else -> Image(
@@ -371,6 +374,29 @@ private fun Settings(state: UiState, vm: MainViewModel) {
             }
         }
     }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Keep original texture", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Text("${(state.texture * 100).roundToInt()}%", style = MaterialTheme.typography.titleSmall)
+    }
+    Slider(
+        value = state.texture,
+        onValueChange = { vm.setTexture((it * 20).roundToInt() / 20f) }, // 5% steps
+        valueRange = 0f..1f,
+    )
+    val result = state.result
+    Text(
+        when {
+            result?.gifFile != null && result.texture != state.texture ->
+                "GIFs bake this in while processing: tap Upscale again to apply the new setting."
+            result != null && result.gifFile == null ->
+                "Updates the result above instantly. 0% = pure AI. Higher brings back the original's grain and fine detail (along with some of its blur and JPEG noise)."
+            else ->
+                "0% = pure AI (smoothest). Higher brings back the original's grain and fine detail (along with some of its blur and JPEG noise)."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

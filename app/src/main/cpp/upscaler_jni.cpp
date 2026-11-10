@@ -175,4 +175,42 @@ Java_app_upscaler_engine_NativeUpscaler_nativeUpscale(JNIEnv* env, jobject, jlon
                                  });
 }
 
+// Classic bicubic enlargement of src into dst (any sizes). Returns false on bitmap errors.
+JNIEXPORT jboolean JNICALL
+Java_app_upscaler_engine_NativeUpscaler_nativeResizeBicubic(JNIEnv* env, jobject, jobject src, jobject dst) {
+    LockedBitmap in(env, src);
+    LockedBitmap out(env, dst);
+    if (!in.pixels || !out.pixels) return JNI_FALSE;
+    upscaler::resizeBicubicRgba(in.pixels, (int)in.info.width, (int)in.info.height, (int)in.info.stride,
+                                out.pixels, (int)out.info.width, (int)out.info.height, (int)out.info.stride);
+    return JNI_TRUE;
+}
+
+// out = ai*(1-t) + classic*t. All the same size; out may be ai or classic.
+JNIEXPORT jboolean JNICALL
+Java_app_upscaler_engine_NativeUpscaler_nativeBlend(JNIEnv* env, jobject, jobject ai, jobject classic,
+                                                    jobject out, jfloat t) {
+    // Lock each distinct bitmap once (locking the same bitmap twice is not allowed).
+    LockedBitmap a(env, ai);
+    if (!a.pixels) return JNI_FALSE;
+    const bool classicIsAi = env->IsSameObject(ai, classic);
+    LockedBitmap* c = classicIsAi ? nullptr : new LockedBitmap(env, classic);
+    const uint8_t* cPix = classicIsAi ? a.pixels : c->pixels;
+    const int cStride = classicIsAi ? (int)a.info.stride : (int)c->info.stride;
+    const bool outIsAi = env->IsSameObject(ai, out);
+    const bool outIsClassic = !classicIsAi && env->IsSameObject(classic, out);
+    LockedBitmap* o = (outIsAi || outIsClassic) ? nullptr : new LockedBitmap(env, out);
+    uint8_t* oPix = outIsAi ? a.pixels : outIsClassic ? c->pixels : o->pixels;
+    const int oStride = outIsAi ? (int)a.info.stride : outIsClassic ? (int)c->info.stride : (int)o->info.stride;
+
+    bool ok = cPix && oPix;
+    if (ok && !classicIsAi && (c->info.width != a.info.width || c->info.height != a.info.height)) ok = false;
+    if (ok && o && (o->info.width != a.info.width || o->info.height != a.info.height)) ok = false;
+    if (ok) upscaler::blendRgba(a.pixels, (int)a.info.stride, cPix, cStride, oPix, oStride,
+                                (int)a.info.width, (int)a.info.height, t);
+    delete o;
+    delete c;
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
 }  // extern "C"

@@ -33,6 +33,12 @@ object NativeUpscaler {
         handle: Long, input: Bitmap, output: Bitmap, outScale: Int, tileSize: Int, listener: ProgressListener,
     ): Int
 
+    /** Classic (bicubic) enlargement of [src] into [dst]; any sizes, both ARGB_8888. */
+    external fun nativeResizeBicubic(src: Bitmap, dst: Bitmap): Boolean
+
+    /** out = ai * (1 - t) + classic * t. Same sizes; [out] may be [ai] or [classic]. */
+    external fun nativeBlend(ai: Bitmap, classic: Bitmap, out: Bitmap, t: Float): Boolean
+
     fun errorMessage(code: Int): String = when (code) {
         -1 -> "Couldn't access the image pixels"
         -2 -> "Invalid size or scale"

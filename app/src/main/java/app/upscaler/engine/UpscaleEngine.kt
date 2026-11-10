@@ -78,6 +78,22 @@ class UpscaleEngine(private val context: Context) {
         return out
     }
 
+    companion object {
+        /** A classic (bicubic) enlargement of [src] to [width] x [height]. */
+        fun classicResize(src: Bitmap, width: Int, height: Int): Bitmap {
+            val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            check(NativeUpscaler.nativeResizeBicubic(src, out)) { "Resize failed" }
+            return out
+        }
+
+        /** New bitmap: [ai] mixed with a classic enlargement of [original] ([texture] 0..1). */
+        fun applyTexture(ai: Bitmap, original: Bitmap, texture: Float): Bitmap {
+            val out = classicResize(original, ai.width, ai.height)
+            check(NativeUpscaler.nativeBlend(ai, out, out, texture)) { "Blend failed" }
+            return out
+        }
+    }
+
     class GifResult(val file: File, val width: Int, val height: Int, val frames: Int, val firstFrame: Bitmap)
 
     /**
@@ -85,7 +101,7 @@ class UpscaleEngine(private val context: Context) {
      * [onProgress] receives (frameIndex, frameCount, overall 0..1).
      */
     fun upscaleGif(
-        bytes: ByteArray, model: UpscaleModel, scale: Int, outFile: File,
+        bytes: ByteArray, model: UpscaleModel, scale: Int, texture: Float, outFile: File,
         onProgress: (Int, Int, Float) -> Unit,
     ): GifResult {
         prepare(model)
@@ -96,6 +112,7 @@ class UpscaleEngine(private val context: Context) {
 
         val inBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val outBmp = Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888)
+        val classicBmp = if (texture > 0f) Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888) else null
         val outPixels = IntArray(ow * oh)
         var prevSource: IntArray? = null
         var firstFrame: Bitmap? = null
@@ -115,6 +132,11 @@ class UpscaleEngine(private val context: Context) {
                         run(handle, inBmp, outBmp, scale) { d, t ->
                             onProgress(i, total, (i + d.toFloat() / t) / total)
                         }
+                        if (classicBmp != null) {
+                            // "Keep original texture": mix in a classic enlargement of the source frame.
+                            NativeUpscaler.nativeResizeBicubic(inBmp, classicBmp)
+                            NativeUpscaler.nativeBlend(outBmp, classicBmp, outBmp, texture)
+                        }
                         outBmp.getPixels(outPixels, 0, ow, 0, 0, ow, oh)
                         prevSource = frame.argb.copyOf()
                     }
@@ -132,6 +154,7 @@ class UpscaleEngine(private val context: Context) {
         } finally {
             inBmp.recycle()
             outBmp.recycle()
+            classicBmp?.recycle()
         }
         if (frames == 0) throw UpscaleException("The GIF has no readable frames")
         return GifResult(outFile, ow, oh, frames, firstFrame!!)

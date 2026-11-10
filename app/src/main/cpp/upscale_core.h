@@ -36,4 +36,14 @@ using Progress = std::function<bool(int, int)>;
 int upscaleRgba(Model& model, const uint8_t* in, int w, int h, int inStride,
                 uint8_t* out, int outStride, int outScale, int tileSize, const Progress& progress);
 
+/// High-quality classic enlargement (Catmull-Rom bicubic) of a premultiplied RGBA8888
+/// image to any size. This is the "regular" upscale the texture slider mixes in.
+void resizeBicubicRgba(const uint8_t* in, int w, int h, int inStride,
+                       uint8_t* out, int ow, int oh, int outStride);
+
+/// out = ai * (1 - t) + classic * t, per channel. All three images are the same size.
+/// `out` may be the same buffer as `ai` or `classic`.
+void blendRgba(const uint8_t* ai, int aiStride, const uint8_t* classic, int classicStride,
+               uint8_t* out, int outStride, int w, int h, float t);
+
 }  // namespace upscaler

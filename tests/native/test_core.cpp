@@ -107,6 +107,51 @@ int main(int argc, char** argv) {
     r = upscaleRgba(big, img.data(), w, h, w * 4, outTiled.data(), ow * 4, 3, 16, nullptr);
     CHECK(r == ERR_ARGS, "unsupported scale 3x rejected (r=%d)", r);
 
+    // --- Bicubic enlargement + texture blend ---
+    {
+        // A flat color stays exactly flat (weights sum to 1, no ringing).
+        std::vector<uint8_t> flat((size_t)w * h * 4);
+        for (size_t i = 0; i < flat.size(); i += 4) { flat[i] = 200; flat[i + 1] = 100; flat[i + 2] = 50; flat[i + 3] = 255; }
+        std::vector<uint8_t> big((size_t)ow * oh * 4);
+        resizeBicubicRgba(flat.data(), w, h, w * 4, big.data(), ow, oh, ow * 4);
+        CHECK(maxDiff(std::vector<uint8_t>(big.begin(), big.begin() + flat.size()), flat) == 0, "bicubic keeps a flat color exact");
+
+        // A linear horizontal ramp stays linear in the interior (cubic reproduces straight lines).
+        std::vector<uint8_t> ramp((size_t)w * h * 4);
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+            uint8_t* p = &ramp[((size_t)y * w + x) * 4]; p[0] = p[1] = p[2] = (uint8_t)(x * 3); p[3] = 255;
+        }
+        resizeBicubicRgba(ramp.data(), w, h, w * 4, big.data(), ow, oh, ow * 4);
+        int rampErr = 0;
+        for (int x = 8; x < ow - 8; x++) {
+            float expect = ((x + 0.5f) / 4 - 0.5f) * 3;
+            rampErr = std::max(rampErr, (int)std::lround(std::fabs(big[((size_t)10 * ow + x) * 4] - expect)));
+        }
+        CHECK(rampErr <= 1, "bicubic reproduces a linear ramp (max error %d)", rampErr);
+
+        // Premultiplied alpha: color never exceeds alpha even with overshoot at hard edges.
+        resizeBicubicRgba(aimg.data(), w, h, w * 4, big.data(), ow, oh, ow * 4);
+        bool pm = true;
+        for (size_t i = 0; i < big.size(); i += 4) for (int c = 0; c < 3; c++) if (big[i + c] > big[i + 3]) pm = false;
+        CHECK(pm, "bicubic keeps colors premultiplied");
+
+        // Non-integer target size (used for on-screen previews).
+        std::vector<uint8_t> odd((size_t)101 * 77 * 4);
+        resizeBicubicRgba(flat.data(), w, h, w * 4, odd.data(), 101, 77, 101 * 4);
+        CHECK(odd[0] == 200 && odd[odd.size() - 4] == 200, "bicubic works for non-integer scale");
+
+        // Blend endpoints and midpoint.
+        std::vector<uint8_t> A((size_t)ow * oh * 4, 0), B((size_t)ow * oh * 4, 200), O(A.size());
+        blendRgba(A.data(), ow * 4, B.data(), ow * 4, O.data(), ow * 4, ow, oh, 0.f);
+        bool e0 = maxDiff(O, A) == 0;
+        blendRgba(A.data(), ow * 4, B.data(), ow * 4, O.data(), ow * 4, ow, oh, 1.f);
+        bool e1 = maxDiff(O, B) == 0;
+        blendRgba(A.data(), ow * 4, B.data(), ow * 4, O.data(), ow * 4, ow, oh, 0.25f);
+        CHECK(e0 && e1 && O[0] == 50, "blend: 0%% = AI, 100%% = classic, 25%% = mix (got %d)", O[0]);
+        blendRgba(A.data(), ow * 4, B.data(), ow * 4, A.data(), ow * 4, ow, oh, 0.5f);  // in place
+        CHECK(A[0] == 100, "blend works in place (got %d)", A[0]);
+    }
+
     printf(fails ? "\n%d FAILURES\n" : "\nALL PASSED\n", fails);
     return fails ? 1 : 0;
 }
